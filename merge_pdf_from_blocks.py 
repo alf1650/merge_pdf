@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+import os, re, io, json, argparse
+from PyPDF2 import PdfReader, PdfWriter
+from PIL import Image, ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+def extract_block_from_filename(filename: str):
+    m = re.match(r"^(\d{3})", filename)
+    return int(m.group(1)) if m else None
+
+# Sort within a block (_L#, trailing seq, fallback)
+L_RE = re.compile(r"_L(\d+)\b", re.IGNORECASE)
+SEQ_RE = re.compile(r"(?:_|-)(\d{1,3})(?=\D|$)")
+
+def image_sort_key(name: str):
+    m1 = L_RE.search(name)
+    lvl = int(m1.group(1)) if m1 else 9999
+    m2 = SEQ_RE.search(name)
+    seq = int(m2.group(1)) if m2 else 9999
+    return (lvl, seq, name.lower())
+
+def image_page(image_path, width_pts, height_pts, dpi=150):
+    try:
+        if not os.path.isfile(image_path):
+            raise FileNotFoundError("not found")
+        if os.path.getsize(image_path) == 0:
+            raise OSError("empty file")
+        with Image.open(image_path) as img:
+            img.load()
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            width_in, height_in = width_pts / 72.0, height_pts / 72.0
+            tgt_w, tgt_h = int(width_in * dpi), int(height_in * dpi)
+            img.thumbnail((tgt_w, tgt_h), Image.Resampling.LANCZOS)
+            canvas = Image.new("RGB", (tgt_w, tgt_h), (255, 255, 255))
+            off = ((tgt_w - img.width)//2, (tgt_h - img.height)//2)
+            canvas.paste(img, off)
+        buf = io.BytesIO()
+        canvas.save(buf, format="PDF", resolution=dpi)
+        buf.seek(0)
+        tmp_reader = PdfReader(buf)
+        page = tmp_reader.pages[0]
+        out_buf = io.BytesIO()
+        w = PdfWriter()
+        w.add_page(page)
+        w.write(out_buf)
+        out_buf.seek(0)
+        final_reader = PdfReader(out_buf)
+        print(f"  ✅ Successfully created PDF page for image: {os.path.basename(image_path)}")
+        return final_reader.pages[0]
+    except Exception as e:
+        print(f"  ⚠️ Failed to convert image: {os.path.basename(image_path)} | Error: {e}")
+        return None
+
+def dedup_keep_order(seq):
+    return list(dict.fromkeys(seq))
+
+def main():
+    ap = argparse.ArgumentParser(description="Merge images using OCR block JSON")
+    ap.add_argument("--input-pdf-dir", default="/Users/alfredlim/Redpower/merge_pdf/input")
+    ap.add_argument("--images-dir", default="/Users/alfredlim/Redpower/merge_pdf/images")
+    ap.add_argument("--json-dir", default="/Users/alfredlim/Redpower/merge_pdf/ocr")
+    ap.add_argument("--output-dir", default="/Users/alfredlim/Redpower/merge_pdf/output")
+    ap.add_argument("--dpi", type=int, default=150)
+    args = ap.parse_args()
+
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    # Index images → {block: [images]}
+    images_by_block = {}
+    for fn in os.listdir(args.images_dir):
+        if not fn.lower().endswith((".jpg", ".jpeg", ".png")):
+            continue
+        blk = extract_block_from_filename(fn)
+        if blk is None:
+            print(f"⚠️ Skipping (no block): {fn}")
+            continue
+        images_by_block.setdefault(blk, []).append(fn)
+
+    for blk in images_by_block:
+        images_by_block[blk] = sorted(images_by_block[blk], key=image_sort_key)
+
+    print(f"✅ Loaded {sum(len(v) for v in images_by_block.values())} images across {len(images_by_block)} blocks.")
+    if images_by_block:
+        for blk in sorted(images_by_block):
+            print(f"   Block {blk}: {images_by_block[blk]}")
+
+    json_files = [f for f in os.listdir(args.json_dir) if f.endswith("_blocks.json")]
+    if not json_files:
+        print("❌ No *_blocks.json files found.")
+        return
+
+    for jf in json_files:
+        with open(os.path.join(args.json_dir, jf), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        pdf_name = data["pdf"]
+        pdf_path = os.path.join(args.input_pdf_dir, pdf_name)
+        if not os.path.isfile(pdf_path):
+            print(f"❌ Missing PDF: {pdf_path}")
+            continue
+
+        reader = PdfReader(pdf_path)
+        writer = PdfWriter()
+        total_image_pages = 0
+
+        print(f"\n{'='*60}")
+        print(f"=== Merging: {pdf_name} using {jf} ===")
+        print('='*60)
+
+        for page in data["pages"]:
+            idx = page["page_index"]
+            if idx >= len(reader.pages):
+                print(f"⚠️ Skip page {idx+1}: beyond PDF page count")
+                continue
+
+            blocks = dedup_keep_order(page.get("clean_blocks", []))
+            blocks = sorted(blocks)
+
+            writer.add_page(reader.pages[idx])
+            print(f"\n📄 Page {idx+1} (original) | Blocks: {blocks}")
+
+            box = reader.pages[idx].mediabox
+            wpts, hpts = float(box.width), float(box.height)
+
+            page_image_count = 0
+            for b in blocks:
+                if b not in images_by_block:
+                    print(f"  ➖ No images for block {b}")
+                    continue
+
+                print(f"  ➕ Found {len(images_by_block[b])} image(s) for block {b}")
+                for img in images_by_block[b]:
+                    img_path = os.path.join(args.images_dir, img)
+                    print(f"    → Processing: {img}")
+                    pg = image_page(img_path, wpts, hpts, dpi=args.dpi)
+                    if pg:
+                        writer.add_page(pg)
+                        total_image_pages += 1
+                        page_image_count += 1
+                    else:
+                        print(f"    ✖️ Skipped due to conversion error")
+
+            if page_image_count == 0:
+                print("  ➖ No images inserted for this page")
+
+        # Final summary
+        original_pages = len(reader.pages)
+        final_pages = len(writer.pages)
+        expected_total = original_pages + total_image_pages
+
+        print(f"\n📊 MERGE SUMMARY FOR {pdf_name}")
+        print(f"   Original pages: {original_pages}")
+        print(f"   Image pages added: {total_image_pages}")
+        print(f"   Final page count: {final_pages} (expected: {expected_total})")
+
+        if final_pages != expected_total:
+            print("   ⚠️ WARNING: Final page count does not match expectation!")
+
+        out_pdf = os.path.join(args.output_dir, os.path.splitext(pdf_name)[0] + "_WITH_IMAGES.pdf")
+        with open(out_pdf, "wb") as f:
+            writer.write(f)
+        print(f"✅ Output saved: {out_pdf}")
+
+if __name__ == "__main__":
+    main()
