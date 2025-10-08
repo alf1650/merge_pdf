@@ -14,18 +14,26 @@ def extract_3digit_blocks(text):
 
 
 def crop_block_table_region(pil_image, page_index=None):
+    """
+    Crop the right-side remarks section where block numbers like 'Blk107Lvl 05' appear.
+    Adjust ratios based on actual layout inspection.
+    """
     width, height = pil_image.size
-    left = int(width * 0.45)
-    top = int(height * 0.02)
-    right = width
-    bottom = int(height * 0.18)
+    # Focus on the right side
+    left = int(width * 0.60)    # Start from 60% width (more rightward)
+    right = width               # Full right edge
+
+    # Focus on middle-bottom where remarks usually are
+    top = int(height * 0.50)    # Start from 50% height (middle)
+    bottom = int(height * 0.90) # Go down to 90% height (near bottom)
+
     cropped = pil_image.crop((left, top, right, bottom))
-    
+
     # DEBUG: Save first page crop to inspect
     if page_index == 0:
-        cropped.save("debug_block_table_page1.jpg")
-        print("📸 Saved debug crop: debug_block_table_page1.jpg")
-    
+        cropped.save("debug_remarks_crop_page1.jpg")
+        print("📸 Saved debug crop of remarks area: debug_remarks_crop_page1.jpg")
+
     return cropped
 
 
