@@ -2,6 +2,7 @@
 import os
 import re
 import json
+import tempfile
 from PyPDF2 import PdfReader, PdfWriter
 from PIL import Image, ImageFile
 import io
@@ -34,6 +35,38 @@ def image_to_pdf_page(image_path, width_points, height_points, dpi=150):
         print(f"  ⚠️ Skipped image: {os.path.basename(image_path)} | {e}")
         return None
 
+def split_pdf_to_pages(pdf_path, temp_dir):
+    """Split PDF into individual pages."""
+    reader = PdfReader(pdf_path)
+    page_files = []
+    for i in range(len(reader.pages)):
+        writer = PdfWriter()
+        writer.add_page(reader.pages[i])
+        page_path = os.path.join(temp_dir, f"page_{i}.pdf")
+        with open(page_path, "wb") as f:
+            writer.write(f)
+        page_files.append(page_path)
+    return page_files
+
+def process_single_page_with_images(page_pdf_path, blocks, image_dir, images_by_block):
+    """Add images for given blocks to a single-page PDF."""
+    reader = PdfReader(page_pdf_path)
+    writer = PdfWriter()
+    writer.add_page(reader.pages[0])  # Original page
+
+    page = reader.pages[0]
+    width_pts = float(page.mediabox.width)
+    height_pts = float(page.mediabox.height)
+
+    for block in blocks:
+        if block in images_by_block:
+            for img_path in images_by_block[block]:
+                print(f"    ➕ Adding: {os.path.basename(img_path)}")
+                pdf_page = image_to_pdf_page(img_path, width_pts, height_pts, dpi=150)
+                if pdf_page:
+                    writer.add_page(pdf_page)
+    return writer
+
 def main():
     input_pdf_dir = "/Users/alfredlim/Redpower/merge_pdf/input"
     image_dir = "/Users/alfredlim/Redpower/merge_pdf/images"
@@ -46,7 +79,7 @@ def main():
         print("❌ No PDFs found.")
         return
 
-    # Build image index: {block: [full_paths]} — NO SORTING
+    # Build image index
     image_files = [f for f in os.listdir(image_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
     images_by_block = {}
     for img_file in image_files:
@@ -59,6 +92,10 @@ def main():
             images_by_block.setdefault(block, []).append(img_path)
         else:
             print(f"⚠️ Skipping (no block): {img_file}")
+
+    # Sort images within each block
+    for block in images_by_block:
+        images_by_block[block].sort()
 
     print(f"✅ Loaded {len(image_files)} images for {len(images_by_block)} blocks.")
 
@@ -76,37 +113,35 @@ def main():
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        reader = PdfReader(pdf_path)
-        writer = PdfWriter()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            print(f"\n📄 Processing: {pdf_filename}")
+            page_files = split_pdf_to_pages(pdf_path, temp_dir)
+            print(f"   Split into {len(page_files)} pages.")
 
-        print(f"\n📄 Processing: {pdf_filename}")
-        for page_info in data["pages"]:
-            idx = page_info["page_index"]
-            if idx >= len(reader.pages):
-                continue
+            # Process each page individually
+            final_writer = PdfWriter()
+            for i, page_pdf in enumerate(page_files):
+                if i >= len(data["pages"]):
+                    print(f"  ⚠️ Page {i+1}: no JSON data, skipping.")
+                    continue
 
-            blocks = page_info["clean_blocks"]  # ✅ Exact order from JSON
-            writer.add_page(reader.pages[idx])
-            print(f"  ➕ Page {idx+1}: blocks {blocks}")
+                page_info = data["pages"][i]
+                blocks = page_info["clean_blocks"]
+                print(f"  ➕ Page {i+1}: blocks {blocks}")
 
-            for block in blocks:
-                if block in images_by_block:
-                    for img_path in images_by_block[block]:  # ✅ No sorting — use as-is
-                        print(f"    ➕ Adding: {os.path.basename(img_path)}")
-                        pdf_page = image_to_pdf_page(
-                            img_path,
-                            float(reader.pages[idx].mediabox.width),
-                            float(reader.pages[idx].mediabox.height),
-                            dpi=150
-                        )
-                        if pdf_page:
-                            writer.add_page(pdf_page)
-                else:
-                    print(f"    ➖ No images for block {block}")
+                # Process this single page with its images
+                page_with_images = process_single_page_with_images(
+                    page_pdf, blocks, image_dir, images_by_block
+                )
 
-        with open(output_path, "wb") as f:
-            writer.write(f)
-        print(f"✅ Output saved: {output_path}")
+                # Append all pages (original + images) to final PDF
+                for p in page_with_images.pages:
+                    final_writer.add_page(p)
+
+            # Save final merged PDF
+            with open(output_path, "wb") as f:
+                final_writer.write(f)
+            print(f"✅ Output saved: {output_path}")
 
     print(f"\n🎉 All done! Outputs in: {output_dir}")
 
