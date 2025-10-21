@@ -1,20 +1,90 @@
 {
   "pdf": "CP MONTHLY.pdf",
-  "dpi": 200,
   "pages": [
     {
       "page_index": 0,
-      "raw_blocks": [
-        "101", "103", "104", "105", "106", "107", "108", "109", 
-        "147", "148", "149", "150", "151", "152", "153", "154", 
-        "162", "165", "166", "167", "170", "171", "172", "173"
-      ],
-      "clean_blocks": [
-        "101", "103", "104", "105", "106", "107", "108", "109", 
-        "147", "148", "149", "150", "151", "152", "153", "154", 
-        "162", "165", "166", "167", "170", "171", "172", "173"
-      ]
+      "equipment": "Fire Alarm",
+      "blocks": ["120", "165", "105", "115A"]
+    },
+    {
+      "page_index": 1,
+      "equipment": "Hosereel",
+      "blocks": ["104", "105", "115A", "162", "165"]
+    },
+    {
+      "page_index": 2,
+      "equipment": "Hosereel",
+      "blocks": ["162"]
+    },
+    {
+      "page_index": 3,
+      "equipment": "Fire Extinguisher",
+      "blocks": ["101", "103", "104", "105", "106", "107", "108", "109"]
+    },
+    {
+      "page_index": 4,
+      "equipment": "Fire Extinguisher",
+      "blocks": ["110", "111", "112", "113", "114", "115", "115A", "115B"]
+    },
+    {
+      "page_index": 5,
+      "equipment": "Fire Extinguisher",
+      "blocks": ["115C", "116", "117", "118", "119", "120", "121", "122"]
+    },
+    {
+      "page_index": 6,
+      "equipment": "Fire Extinguisher",
+      "blocks": ["123", "124", "125", "126", "127", "128", "129", "130"]
+    },
+    {
+      "page_index": 7,
+      "equipment": "Fire Extinguisher",
+      "blocks": ["131", "132", "133", "134", "135", "136", "137", "138"]
+    },
+    {
+      "page_index": 8,
+      "equipment": "Fire_Extinguisher",
+      "blocks": ["139", "140", "141", "142", "143", "144", "145", "146"]
+    },
+    {
+      "page_index": 9,
+      "equipment": "Fire Extinguisher",
+      "blocks": ["147", "148", "149", "150", "151", "152", "153", "154"]
+    },
+    {
+      "page_index": 10,
+      "equipment": "Fire Extinguisher",
+      "blocks": ["155", "156", "157", "158", "159", "160", "161", "162"]
+    },
+    {
+      "page_index": 11,
+      "equipment": "Fire Extinguisher",
+      "blocks": ["163", "164", "165", "166", "167", "170", "171", "172", "173"]
+    },
+    {
+      "page_index": 12,
+      "equipment": "Fire Extinguisher",
+      "blocks": ["174", "175", "265", "266", "267", "268", "269", "270"]
+    },
+    {
+      "page_index": 13,
+      "equipment": "Fire_Extinguisher",
+      "blocks": ["271", "272", "273", "274", "275", "276", "277", "278"]
+    },
+    {
+      "page_index": 14,
+      "equipment": "Fire_Extinguisher",
+      "blocks": ["279", "280", "281", "282", "283", "284", "285", "286"]
+    },
+    {
+      "page_index": 15,
+      "equipment": "Fire_Extinguisher",
+      "blocks": ["287", "288", "289"]
+    },
+    {
+      "page_index": 16,
+      "equipment": "Decam",
+      "blocks": ["115A"]
     }
-  ],
-  "global_noise_blocks": []
+  ]
 }
