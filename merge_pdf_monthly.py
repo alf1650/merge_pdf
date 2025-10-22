@@ -11,7 +11,8 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 # Normalize equipment names to match image prefixes
 EQUIPMENT_TO_PREFIX = {
     "Fire Alarm": "fire_alarm",
-    "Hosereel": "hosereel",
+    "Hosereel System": "hosereel",
+    "Hosereel Pump": "hosereel_pump",
     "Fire Extinguisher": "fire_extinguisher",
     "Pressure Tank": "pressure_tank",
     "Decam": "decam",

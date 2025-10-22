@@ -8,12 +8,12 @@
     },
     {
       "page_index": 1,
-      "equipment": "Hosereel",
+      "equipment": "Hosereel System",
       "blocks": ["104", "105", "115A", "162", "165"]
     },
     {
       "page_index": 2,
-      "equipment": "Hosereel",
+      "equipment": "Hosereel Pump",
       "blocks": ["162"]
     },
     {
