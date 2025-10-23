@@ -5,6 +5,7 @@ import json
 from PyPDF2 import PdfReader, PdfWriter
 from PIL import Image, ImageFile
 import io
+import shutil
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -21,32 +22,15 @@ EQUIPMENT_TO_PREFIX = {
 PREFIX_TO_EQUIPMENT = {v: k for k, v in EQUIPMENT_TO_PREFIX.items()}
 
 def get_base_block(block):
-    """
-    Extract the first sequence of 3 or more digits from the block.
-    If not found, fall back to first digit sequence.
-    Examples:
-      "333C"      → "333"
-      "501A"      → "501"
-      "728/729"   → "728"
-      "32"        → "32"
-      "ABC123"    → "123"
-    """
-    # First try 3+ digits
     match = re.search(r'\d{3,}', block)
     if match:
         return match.group(0)
-    # Then any digits
     match = re.search(r'\d+', block)
     return match.group(0) if match else block
 
 def extract_equipment_and_block_from_filename(filename):
-    """
-    Extract (equipment, block) from image filename.
-    Returns (equipment_name, block_id) or (None, None).
-    """
     basename = os.path.basename(filename)
     name, ext = os.path.splitext(basename)
-
     for prefix, equip_name in PREFIX_TO_EQUIPMENT.items():
         if name.startswith(prefix + "_"):
             rest = name[len(prefix) + 1:]
@@ -55,12 +39,10 @@ def extract_equipment_and_block_from_filename(filename):
                 cleaned = re.sub(r'[^a-zA-Z0-9/]', '', block_candidate)
                 if cleaned:
                     return equip_name, cleaned
-
     if name and name[0].isdigit():
         cleaned = re.sub(r'[^a-zA-Z0-9/]', '', name)
         if cleaned:
             return None, cleaned
-
     return None, None
 
 def image_to_pdf_page(image_path, width_points, height_points, dpi=150):
@@ -68,161 +50,167 @@ def image_to_pdf_page(image_path, width_points, height_points, dpi=150):
         with Image.open(image_path) as img:
             if img.mode != 'RGB':
                 img = img.convert('RGB')
-
             target_width_in = width_points / 72.0
             target_height_in = height_points / 72.0
-
             target_width_px = int(target_width_in * dpi)
             target_height_px = int(target_height_in * dpi)
-
             img_width, img_height = img.size
             img_ratio = img_width / img_height
             target_ratio = target_width_px / target_height_px
-
             if img_ratio > target_ratio:
                 new_width = target_width_px
                 new_height = int(new_width / img_ratio)
             else:
                 new_height = target_height_px
                 new_width = int(new_height * img_ratio)
-
             resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
             canvas = Image.new('RGB', (target_width_px, target_height_px), (255, 255, 255))
-
             offset_x = (target_width_px - new_width) // 2
             offset_y = (target_height_px - new_height) // 2
             canvas.paste(resized_img, (offset_x, offset_y))
-
             pdf_buffer = io.BytesIO()
             canvas.save(pdf_buffer, format='PDF', resolution=dpi)
             pdf_buffer.seek(0)
             reader = PdfReader(pdf_buffer)
             return reader.pages[0]
-
     except Exception as e:
         print(f"  ⚠️ Skipped image: {os.path.basename(image_path)} | {e}")
         return None
+
+def split_pdf_into_pages(pdf_path, temp_dir):
+    """Split PDF into individual page files."""
+    reader = PdfReader(pdf_path)
+    page_paths = []
+    for i in range(len(reader.pages)):
+        writer = PdfWriter()
+        writer.add_page(reader.pages[i])
+        page_path = os.path.join(temp_dir, f"page_{i+1}.pdf")
+        with open(page_path, "wb") as f:
+            writer.write(f)
+        page_paths.append(page_path)
+    return page_paths
 
 def main():
     input_pdf_dir = "/Users/alfredlim/Redpower/merge_pdf/input"
     image_dir = "/Users/alfredlim/Redpower/merge_pdf/images"
     json_dir = "/Users/alfredlim/Redpower/merge_pdf/ocr"
     output_dir = "/Users/alfredlim/Redpower/merge_pdf/output"
+    temp_dir = "/Users/alfredlim/Redpower/merge_pdf/temp"
     os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(temp_dir, exist_ok=True)
 
-    pdf_files = [f for f in os.listdir(input_pdf_dir) if f.lower().endswith('.pdf')]
-    if not pdf_files:
-        print("❌ No PDFs found.")
-        return
+    try:
+        pdf_files = [f for f in os.listdir(input_pdf_dir) if f.lower().endswith('.pdf')]
+        if not pdf_files:
+            print("❌ No PDFs found.")
+            return
 
-    image_files = [f for f in os.listdir(image_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-    images_by_equip_block = {}
-    images_by_block_only = {}
+        # Build image index: (equipment, block) -> list of image paths
+        image_files = [f for f in os.listdir(image_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+        images_by_equip_block = {}
+        for img_file in image_files:
+            img_path = os.path.join(image_dir, img_file)
+            if os.path.getsize(img_path) == 0:
+                continue
+            equipment, block = extract_equipment_and_block_from_filename(img_file)
+            if block is None:
+                continue
+            if equipment:
+                key = (equipment, block)
+                images_by_equip_block.setdefault(key, []).append(img_path)
 
-    for img_file in image_files:
-        img_path = os.path.join(image_dir, img_file)
-        if os.path.getsize(img_path) == 0:
-            print(f"⚠️ Skipping empty file: {img_file}")
-            continue
+        for pdf_filename in pdf_files:
+            base_name = os.path.splitext(pdf_filename)[0]
+            json_path = os.path.join(json_dir, f"{base_name}_blocks.json")
+            pdf_path = os.path.join(input_pdf_dir, pdf_filename)
+            output_path = os.path.join(output_dir, f"{base_name}_WITH_IMAGES.pdf")
 
-        equipment, block = extract_equipment_and_block_from_filename(img_file)
-        if block is None:
-            print(f"⚠️ Skipping (no valid block): {img_file}")
-            continue
+            if not os.path.isfile(json_path):
+                print(f"⚠️ Skipping {pdf_filename}: JSON not found")
+                continue
 
-        if equipment:
-            key = (equipment, block)
-            images_by_equip_block.setdefault(key, []).append(img_path)
-        else:
-            images_by_block_only.setdefault(block, []).append(img_path)
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
 
-    print(f"✅ Loaded {len(image_files)} images.")
-    print(f"   - With equipment: {len(images_by_equip_block)} keys")
-    print(f"   - Block-only: {len(images_by_block_only)} blocks")
+            if "pages" not in data:
+                print(f"⚠️ Skipping {pdf_filename}: 'pages' key not found in JSON")
+                continue
 
-    for pdf_filename in pdf_files:
-        base_name = os.path.splitext(pdf_filename)[0]
-        json_path = os.path.join(json_dir, f"{base_name}_blocks.json")
-        pdf_path = os.path.join(input_pdf_dir, pdf_filename)
-        output_path = os.path.join(output_dir, f"{base_name}_WITH_IMAGES.pdf")
+            pages_list = data["pages"]
+            print(f"\n📄 Processing: {pdf_filename}")
 
-        if not os.path.isfile(json_path):
-            print(f"⚠️ Skipping {pdf_filename}: JSON not found")
-            continue
+            # Step 1: Split PDF into individual pages
+            page_files = split_pdf_into_pages(pdf_path, temp_dir)
+            total_pdf_pages = len(page_files)
+            print(f"   Split into {total_pdf_pages} pages.")
 
-        with open(json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            final_writer = PdfWriter()
+            used_images = set()
 
-        if "pages" not in data:
-            print(f"⚠️ Skipping {pdf_filename}: 'pages' key not found in JSON")
-            continue
+            # Step 2: Process each page in isolation
+            for i in range(total_pdf_pages):
+                page_pdf_path = page_files[i]
+                page_reader = PdfReader(page_pdf_path)
+                original_page = page_reader.pages[0]
+                final_writer.add_page(original_page)
 
-        pages_list = data["pages"]
-        print(f"\n📄 Processing: {pdf_filename}")
-        reader = PdfReader(pdf_path)
-        total_pdf_pages = len(reader.pages)
-        print(f"   Found {total_pdf_pages} pages in PDF.")
-        print(f"   JSON defines {len(pages_list)} pages.")
+                if i < len(pages_list):
+                    page_info = pages_list[i]
+                    if "blocks" not in page_info:
+                        print(f"  ⚠️ Page {i+1}: missing 'blocks'")
+                        continue
 
-        final_writer = PdfWriter()
+                    equipment = page_info.get("equipment", "Unknown")
+                    blocks = page_info["blocks"]
+                    print(f"  ➕ Page {i+1} ({equipment}): blocks {blocks}")
 
-        for i in range(total_pdf_pages):
-            original_page = reader.pages[i]
-            final_writer.add_page(original_page)
+                    width_pts = float(original_page.mediabox.width)
+                    height_pts = float(original_page.mediabox.height)
 
-            if i < len(pages_list):
-                page_info = pages_list[i]
-                if "blocks" not in page_info:
-                    print(f"  ⚠️ Page {i+1}: missing 'blocks'")
-                    continue
+                    for block in blocks:
+                        found = False
+                        base_block = get_base_block(block)
+                        candidates = [block]
+                        if base_block != block:
+                            candidates.append(base_block)
 
-                equipment = page_info.get("equipment", "Unknown")
-                blocks = page_info["blocks"]
-                print(f"  ➕ Page {i+1} ({equipment}): blocks {blocks}")
+                        for cand_block in candidates:
+                            key = (equipment, cand_block)
+                            matched_images = []
+                            if key in images_by_equip_block:
+                                matched_images = images_by_equip_block[key]
 
-                width_pts = float(original_page.mediabox.width)
-                height_pts = float(original_page.mediabox.height)
-                image_added = False
+                            if matched_images:
+                                for img_path in matched_images:
+                                    if img_path in used_images:
+                                        print(f"    ➖ Skipping duplicate image: {os.path.basename(img_path)}")
+                                        continue
 
-                for block in blocks:
-                    found = False
-                    base_block = get_base_block(block)
-                    # Try exact block first, then base block
-                    candidates = [block]
-                    if base_block != block:
-                        candidates.append(base_block)
+                                    output_page_num = len(final_writer.pages) + 1
+                                    print(f"    ➕ Added image as PDF page {output_page_num}: {os.path.basename(img_path)} (for block {cand_block})")
 
-                    for cand_block in candidates:
-                        key = (equipment, cand_block)
-                        matched_images = []
-                        if key in images_by_equip_block:
-                            matched_images = images_by_equip_block[key]
-                        elif cand_block in images_by_block_only:
-                            matched_images = images_by_block_only[cand_block]
-                            print(f"    ⚠️ Using block-only image for {key} (no equipment match)")
+                                    img_page = image_to_pdf_page(img_path, width_pts, height_pts, dpi=150)
+                                    if img_page:
+                                        final_writer.add_page(img_page)
+                                        used_images.add(img_path)
+                                        found = True
+                                if found:
+                                    break
 
-                        if matched_images:
-                            for img_path in matched_images:
-                                print(f"    ➕ Adding image after page {i+1}: {os.path.basename(img_path)} (matched: {cand_block})")
-                                img_page = image_to_pdf_page(img_path, width_pts, height_pts, dpi=150)
-                                if img_page:
-                                    final_writer.add_page(img_page)
-                                    image_added = True
-                                    found = True
-                            if found:
-                                break
+                        if not found:
+                            print(f"    ➖ No image found for block {block} (tried: {candidates})")
+                else:
+                    print(f"  ⚠️ Page {i+1}: no JSON entry — no images added.")
 
-                    if not found:
-                        print(f"    ➖ No image found for block {block} (tried: {candidates})")
+            # Step 3: Save final PDF
+            with open(output_path, "wb") as f:
+                final_writer.write(f)
+            print(f"✅ Output saved: {output_path}")
 
-                if not image_added:
-                    print(f"    ➖ No images found for page {i+1}")
-            else:
-                print(f"  ⚠️ Page {i+1}: no JSON entry — no images added.")
-
-        with open(output_path, "wb") as f:
-            final_writer.write(f)
-        print(f"✅ Output saved: {output_path}")
+    finally:
+        # Clean up temp directory
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
 
     print(f"\n🎉 All done! Outputs in: {output_dir}")
 
