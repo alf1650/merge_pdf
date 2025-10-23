@@ -11,15 +11,33 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 # Normalize equipment names to match image prefixes
 EQUIPMENT_TO_PREFIX = {
     "Fire Alarm": "fire_alarm",
-    "Hosereel System": "hosereel",
+    "Hosereel System": "hosereel_system",
     "Hosereel Pump": "hosereel_pump",
     "Fire Extinguisher": "fire_extinguisher",
     "Pressure Tank": "pressure_tank",
     "Decam": "decam",
-    # Add more if needed
 }
 
 PREFIX_TO_EQUIPMENT = {v: k for k, v in EQUIPMENT_TO_PREFIX.items()}
+
+def get_base_block(block):
+    """
+    Extract the first sequence of 3 or more digits from the block.
+    If not found, fall back to first digit sequence.
+    Examples:
+      "333C"      → "333"
+      "501A"      → "501"
+      "728/729"   → "728"
+      "32"        → "32"
+      "ABC123"    → "123"
+    """
+    # First try 3+ digits
+    match = re.search(r'\d{3,}', block)
+    if match:
+        return match.group(0)
+    # Then any digits
+    match = re.search(r'\d+', block)
+    return match.group(0) if match else block
 
 def extract_equipment_and_block_from_filename(filename):
     """
@@ -29,18 +47,15 @@ def extract_equipment_and_block_from_filename(filename):
     basename = os.path.basename(filename)
     name, ext = os.path.splitext(basename)
 
-    # Try known prefixes
     for prefix, equip_name in PREFIX_TO_EQUIPMENT.items():
         if name.startswith(prefix + "_"):
-            rest = name[len(prefix) + 1:]  # +1 for underscore
+            rest = name[len(prefix) + 1:]
             block_candidate = rest.split('_')[0]
             if block_candidate and block_candidate[0].isdigit():
                 cleaned = re.sub(r'[^a-zA-Z0-9/]', '', block_candidate)
                 if cleaned:
                     return equip_name, cleaned
 
-    # Fallback: if no prefix, assume block-only, but we can't infer equipment
-    # So return (None, block) — will only match if page equipment is ignored (not recommended)
     if name and name[0].isdigit():
         cleaned = re.sub(r'[^a-zA-Z0-9/]', '', name)
         if cleaned:
@@ -49,7 +64,6 @@ def extract_equipment_and_block_from_filename(filename):
     return None, None
 
 def image_to_pdf_page(image_path, width_points, height_points, dpi=150):
-    # ... (keep your existing implementation unchanged) ...
     try:
         with Image.open(image_path) as img:
             if img.mode != 'RGB':
@@ -101,10 +115,9 @@ def main():
         print("❌ No PDFs found.")
         return
 
-    # Build image index: (equipment, block) -> list of image paths
     image_files = [f for f in os.listdir(image_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-    images_by_equip_block = {}  # key: (equip, block)
-    images_by_block_only = {}   # fallback for images without equipment prefix
+    images_by_equip_block = {}
+    images_by_block_only = {}
 
     for img_file in image_files:
         img_path = os.path.join(image_dir, img_file)
@@ -120,17 +133,13 @@ def main():
         if equipment:
             key = (equipment, block)
             images_by_equip_block.setdefault(key, []).append(img_path)
-            print(f"  📌 Indexed: {key} <- {img_file}")
         else:
-            # No equipment in filename — store separately
             images_by_block_only.setdefault(block, []).append(img_path)
-            print(f"  📌 Indexed (no equip): {block} <- {img_file}")
 
     print(f"✅ Loaded {len(image_files)} images.")
     print(f"   - With equipment: {len(images_by_equip_block)} keys")
     print(f"   - Block-only: {len(images_by_block_only)} blocks")
 
-    # Process each PDF
     for pdf_filename in pdf_files:
         base_name = os.path.splitext(pdf_filename)[0]
         json_path = os.path.join(json_dir, f"{base_name}_blocks.json")
@@ -176,22 +185,35 @@ def main():
                 image_added = False
 
                 for block in blocks:
-                    # First: try exact (equipment, block) match
-                    key = (equipment, block)
-                    matched_images = []
-                    if key in images_by_equip_block:
-                        matched_images = images_by_equip_block[key]
-                    elif block in images_by_block_only:
-                        # Fallback: use block-only images (less accurate)
-                        matched_images = images_by_block_only[block]
-                        print(f"    ⚠️ Using block-only image for {key} (no equipment match)")
+                    found = False
+                    base_block = get_base_block(block)
+                    # Try exact block first, then base block
+                    candidates = [block]
+                    if base_block != block:
+                        candidates.append(base_block)
 
-                    for img_path in matched_images:
-                        print(f"    ➕ Adding image after page {i+1}: {os.path.basename(img_path)}")
-                        img_page = image_to_pdf_page(img_path, width_pts, height_pts, dpi=150)
-                        if img_page:
-                            final_writer.add_page(img_page)
-                            image_added = True
+                    for cand_block in candidates:
+                        key = (equipment, cand_block)
+                        matched_images = []
+                        if key in images_by_equip_block:
+                            matched_images = images_by_equip_block[key]
+                        elif cand_block in images_by_block_only:
+                            matched_images = images_by_block_only[cand_block]
+                            print(f"    ⚠️ Using block-only image for {key} (no equipment match)")
+
+                        if matched_images:
+                            for img_path in matched_images:
+                                print(f"    ➕ Adding image after page {i+1}: {os.path.basename(img_path)} (matched: {cand_block})")
+                                img_page = image_to_pdf_page(img_path, width_pts, height_pts, dpi=150)
+                                if img_page:
+                                    final_writer.add_page(img_page)
+                                    image_added = True
+                                    found = True
+                            if found:
+                                break
+
+                    if not found:
+                        print(f"    ➖ No image found for block {block} (tried: {candidates})")
 
                 if not image_added:
                     print(f"    ➖ No images found for page {i+1}")
