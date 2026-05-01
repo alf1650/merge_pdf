@@ -5,6 +5,7 @@ import re
 import shutil
 import tempfile
 from collections import defaultdict
+from datetime import datetime, timedelta
 
 from PIL import Image, ImageFile
 from pypdf import PdfReader, PdfWriter
@@ -70,6 +71,61 @@ def extract_equipment_and_block_from_filename(filename):
     return None, None
 
 
+def _parse_day_first_date(raw_value):
+    cleaned = raw_value.strip().replace(".", "-").replace("/", "-")
+    for fmt in ("%d-%m-%Y", "%d-%m-%y"):
+        try:
+            return datetime.strptime(cleaned, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def extract_weekly_start_date(pdf_reader):
+    # Weekly checklist date is usually near "DATE OF SERVICING" on early pages.
+    candidate_text = []
+    for page in pdf_reader.pages[: min(3, len(pdf_reader.pages))]:
+        candidate_text.append(page.extract_text() or "")
+    text = "\n".join(candidate_text)
+
+    servicing_match = re.search(
+        r"DATE\s*OF\s*SERVICING[^0-9]{0,40}(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+        text,
+        re.IGNORECASE,
+    )
+    if servicing_match:
+        parsed = _parse_day_first_date(servicing_match.group(1))
+        if parsed:
+            return parsed
+
+    for match in re.finditer(r"\b(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\b", text):
+        parsed = _parse_day_first_date(match.group(1))
+        if parsed:
+            return parsed
+
+    return None
+
+
+def extract_image_date_from_filename(filename):
+    basename = os.path.basename(filename)
+
+    ymd_token = re.search(r"_(\d{8})_PHOTO", basename, re.IGNORECASE)
+    if ymd_token:
+        try:
+            return datetime.strptime(ymd_token.group(1), "%Y%m%d").date()
+        except ValueError:
+            pass
+
+    photo_iso = re.search(r"PHOTO-(\d{4})-(\d{2})-(\d{2})", basename, re.IGNORECASE)
+    if photo_iso:
+        try:
+            return datetime.strptime("-".join(photo_iso.groups()), "%Y-%m-%d").date()
+        except ValueError:
+            pass
+
+    return None
+
+
 def convert_image_to_pdf_file(img_path, width_pts, height_pts, temp_dir):
     try:
         with Image.open(img_path) as img:
@@ -121,7 +177,8 @@ def combine_output_pdfs(output_dir):
         return
 
     for site_prefix, files in groups.items():
-        sorted_files = sorted(files, key=natural_sort_key)
+        # Always combine by extracted page number to preserve original report order.
+        sorted_files = sorted(files, key=lambda f: int(page_pattern.match(f).group(1)))
         merged_writer = PdfWriter()
         total_pages = 0
 
@@ -159,7 +216,10 @@ def main():
         return
 
     image_files = [f for f in os.listdir(image_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))]
+    total_images_available = len(image_files)
     images_by_equip_block = {}
+    attached_images_by_file = {}
+    all_attached_images = set()
 
     for img_file in image_files:
         img_path = os.path.join(image_dir, img_file)
@@ -176,6 +236,7 @@ def main():
 
     for pdf_filename in pdf_files:
         base_name = os.path.splitext(pdf_filename)[0]
+        is_weekly = "WEEKLY" in pdf_filename.upper()
         json_path = os.path.join(json_dir, f"{base_name}_blocks.json")
         pdf_path = os.path.join(input_pdf_dir, pdf_filename)
 
@@ -225,8 +286,21 @@ def main():
         total_pdf_pages = len(reader.pages)
         print(f"  PDF pages: {total_pdf_pages}, JSON entries: {len(pages_list)}")
 
+        weekly_start_date = None
+        weekly_end_date = None
+        if is_weekly:
+            weekly_start_date = extract_weekly_start_date(reader)
+            if weekly_start_date:
+                weekly_end_date = weekly_start_date + timedelta(days=6)
+                print(
+                    f"  Weekly date window: {weekly_start_date.isoformat()} to {weekly_end_date.isoformat()}"
+                )
+            else:
+                print("  Weekly date window: not found in checklist, using all matching pictures")
+
         cache_dir = tempfile.mkdtemp(prefix=f"merge_pdf_{base_name[:20]}_")
         used_images = set()
+        report_attached_images = []
 
         try:
             for i in range(total_pdf_pages):
@@ -241,7 +315,7 @@ def main():
                     equipment = EQUIPMENT_TO_PREFIX.get(raw_equipment.lower(), raw_equipment.lower())
                     blocks = page_info.get("blocks", [])
 
-                    if not should_attach_on_page(i):
+                    if not is_weekly and not should_attach_on_page(i):
                         print(f"    Deferring attachments to next page for repeated block set: {blocks}")
                         blocks = []
 
@@ -251,7 +325,6 @@ def main():
                         if base_block != block:
                             candidates.append(base_block)
 
-                        found = False
                         for cand_block in candidates:
                             key = (equipment, cand_block)
                             matched_images = images_by_equip_block.get(key, [])
@@ -259,6 +332,13 @@ def main():
                             for img_path in matched_images:
                                 if img_path in used_images:
                                     continue
+
+                                if weekly_start_date and weekly_end_date:
+                                    image_date = extract_image_date_from_filename(img_path)
+                                    if not image_date:
+                                        continue
+                                    if image_date < weekly_start_date or image_date > weekly_end_date:
+                                        continue
 
                                 temp_pdf_path = convert_image_to_pdf_file(
                                     img_path,
@@ -270,22 +350,17 @@ def main():
                                     continue
 
                                 try:
-                                    with open(temp_pdf_path, "rb") as pdf_file:
-                                        img_reader = PdfReader(pdf_file)
-                                        # Add image as next page after remarks section.
-                                        page_writer.add_page(img_reader.pages[0])
+                                    img_reader = PdfReader(temp_pdf_path)
+                                    # Add image as next page after remarks section.
+                                    page_writer.add_page(img_reader.pages[0])
                                     used_images.add(img_path)
+                                    report_attached_images.append(os.path.basename(img_path))
                                     appended_count += 1
-                                    found = True
-                                    break
                                 except Exception as e:
                                     print(
                                         f"    Error appending image {os.path.basename(img_path)} "
                                         f"for block {cand_block}: {e}"
                                     )
-
-                            if found:
-                                break
 
                 site_prefix = f"{base_name} (with images)"
                 output_filename = f"page{i+1}_{site_prefix}.pdf"
@@ -296,6 +371,9 @@ def main():
 
                 print(f"  Saved {output_filename} (appended pages: {appended_count})")
 
+            attached_images_by_file[pdf_filename] = report_attached_images
+            all_attached_images.update(report_attached_images)
+
         finally:
             try:
                 shutil.rmtree(cache_dir)
@@ -303,6 +381,28 @@ def main():
                 print(f"Could not clean temp directory {cache_dir}: {e}")
 
     combine_output_pdfs(output_dir)
+
+    attached_json_path = os.path.join(output_dir, "attached_images_by_file.json")
+    with open(attached_json_path, "w", encoding="utf-8") as f:
+        json.dump(attached_images_by_file, f, indent=2)
+
+    unused_images = sorted(set(image_files) - all_attached_images)
+    summary = {
+        "processed_reports": len(pdf_files),
+        "files_with_attached_images": sum(1 for v in attached_images_by_file.values() if v),
+        "total_attached_images": len(all_attached_images),
+        "total_images_available": total_images_available,
+        "unused_images_count": len(unused_images),
+    }
+
+    summary_json_path = os.path.join(output_dir, "attachment_audit_summary.json")
+    with open(summary_json_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+    unused_json_path = os.path.join(output_dir, "unused_images.json")
+    with open(unused_json_path, "w", encoding="utf-8") as f:
+        json.dump(unused_images, f, indent=2)
+
     print(f"\nDone. Outputs in: {output_dir}")
 
 
