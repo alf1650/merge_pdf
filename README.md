@@ -1,86 +1,104 @@
 # merge_pdf
 
-Generate block-mapping JSON files from checklist PDFs, then use them for PDF image merge workflows.
+Checklist PDF merge and pump-template generation workflows.
 
-## What this folder does
+## Core folders
 
-- Reads checklist PDFs from input
-- Extracts page-level equipment type and block numbers
-- Writes JSON files to ocr in the format expected by main.py
-- Merges checklist PDFs with matched defect images
-- Produces per-run attachment audit files in output
+- `input/`: source checklist PDFs
+- `ocr/`: per-PDF block mapping JSON files (`*_blocks.json`)
+- `images/`: renamed defect pictures used for attachment
+- `output/`: merged outputs and audit/report files
+- `staged/`: generated/staged checklist variants (including pump template outputs)
 
-## Generate JSON from PDFs
+## Main merge workflow
 
-Script: generate_blocks_json.py
+Script: `main.py`
 
-Default behavior:
+Command:
 
-- Input folder: /Users/alfredlim/Redpower/merge_pdf/input
-- Output folder: /Users/alfredlim/Redpower/merge_pdf/ocr
-- Output filename pattern: <PDF_BASENAME>_blocks.json
+`/Users/alfredlim/Redpower/venv/bin/python /Users/alfredlim/Redpower/merge_pdf/main.py`
 
-Run command:
+What it does:
 
-/Users/alfredlim/Redpower/venv/bin/python /Users/alfredlim/Redpower/merge_pdf/generate_blocks_json.py
+1. Reads PDFs in `input/`.
+2. Looks up block mappings from `ocr/<PDF_STEM>_blocks.json`.
+3. Matches images in `images/` by equipment + block.
+4. Produces combined PDFs in `output/`.
+5. Rebuilds audit files on every run.
 
-Optional custom paths:
+Main outputs:
 
-/Users/alfredlim/Redpower/venv/bin/python /Users/alfredlim/Redpower/merge_pdf/generate_blocks_json.py --input-pdf-dir /path/to/input --output-json-dir /path/to/ocr
+- `<REPORT_NAME> (with images)_combined.pdf`
+- `attached_images_by_file.json`
+- `attachment_audit_summary.json`
+- `unused_images.json`
 
-## Run Merge Pipeline
+## JSON generation workflow
 
-Script: main.py
+Script: `generate_blocks_json.py`
 
-Run command:
+Command:
 
-/Users/alfredlim/Redpower/venv/bin/python /Users/alfredlim/Redpower/merge_pdf/main.py
+`/Users/alfredlim/Redpower/venv/bin/python /Users/alfredlim/Redpower/merge_pdf/generate_blocks_json.py`
 
-Pipeline behavior:
+Optional:
 
-- Reads PDFs from input
-- Reads block JSON mappings from ocr
-- Matches images from images by equipment + block
-- Writes merged PDFs into output
-- Rebuilds audit files on every run (fresh)
+`/Users/alfredlim/Redpower/venv/bin/python /Users/alfredlim/Redpower/merge_pdf/generate_blocks_json.py --input-pdf-dir /path/to/input --output-json-dir /path/to/ocr`
 
-## Output files
+## Pump date planning workflow
 
-Main outputs in output:
+Script: `update_pump_dates.py`
 
-- <REPORT_NAME> (with images)_combined.pdf
+Purpose:
 
-Audit outputs in output:
+- Builds `pump_date_update_plan.csv/json` for pump PDFs.
+- Uses image dates for the selected month.
+- Can estimate missing dates when no direct image match exists.
 
-- attached_images_by_file.json: image filenames attached per report
-- attachment_audit_summary.json: run summary (processed reports, attached count, unused count)
-- unused_images.json: image filenames not attached in that run
+Typical command:
+
+`/Users/alfredlim/Redpower/venv/bin/python /Users/alfredlim/Redpower/merge_pdf/update_pump_dates.py --input-dir input --ocr-dir ocr --image-dir images --report-dir output --target-month 2026-04 --estimate-missing`
+
+## Pump template generation workflow
+
+Script: `generate_pump_template_pdfs.py`
+
+Purpose:
+
+- Reads pump date plan CSV.
+- Writes dated pump checklist XLSX files.
+- Optionally exports PDFs.
+- Keeps remarks area clean (row-level border and zero-height row handling).
+
+Typical command:
+
+`/Users/alfredlim/Redpower/venv/bin/python /Users/alfredlim/Redpower/merge_pdf/generate_pump_template_pdfs.py --plan-csv output/pump_date_update_plan.csv --ocr-dir ocr --output-dir staged/pump_template_dates --technician MANI --remarks-text "Please refer to the attached defect photos for the comments indicated" --export-pdf`
+
+## Special ANNUALLY/HALF YEARLY setup
+
+Special image pool rule used in operations:
+
+- include all pictures in `images/_not_april/`
+- plus `dr_` pictures from `images/` for the target month (for example `2026-04`)
+
+This special setup is now exposed via `control_server` as a one-click tool (`special_merge_run`).
 
 ## Recommended run order
 
-1. Regenerate JSON mappings:
+1. `generate_blocks_json.py` when input PDFs change.
+2. `update_pump_dates.py` when monthly date references change.
+3. `generate_pump_template_pdfs.py` for new pump template outputs.
+4. `main.py` for checklist-image merge outputs.
 
-	/Users/alfredlim/Redpower/venv/bin/python /Users/alfredlim/Redpower/merge_pdf/generate_blocks_json.py
+## JSON schema (summary)
 
-2. Run merge + fresh audit:
+Each `*_blocks.json` file contains:
 
-	/Users/alfredlim/Redpower/venv/bin/python /Users/alfredlim/Redpower/merge_pdf/main.py
+- `pdf`: source PDF filename
+- `pages`: list of page objects
 
-## JSON schema
+Each page object contains:
 
-Each generated file contains:
-
-- pdf: source PDF filename
-- pages: list of page objects
-
-Each page object:
-
-- page_index: zero-based page number
-- equipment: normalized equipment code (for example fas, hr, fe, pt, dr, sprinkler, genset)
-- blocks: ordered block list found on that page
-
-## Notes
-
-- Running the generator overwrites existing JSON files with the same name.
-- Existing extra JSON files in ocr that do not match current input PDFs are not deleted automatically.
-- main.py overwrites audit files in output on each run so they always reflect the latest execution.
+- `page_index`: zero-based page index
+- `equipment`: normalized equipment code
+- `blocks`: ordered block list found on that page
